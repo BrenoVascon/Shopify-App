@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useLoaderData, useSubmit, useNavigation, useRouteError } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -122,28 +122,32 @@ export default function ProductSuggestionConfig() {
   const shopify = useAppBridge();
 
   const [productRelations, setProductRelations] = useState(initialRelations);
-  const [selectedMainProduct, setSelectedMainProduct] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [expandedProducts, setExpandedProducts] = useState(new Set());
 
   const isLoading = navigation.state === "submitting";
 
-  const handleSelectMainProduct = useCallback(async () => {
-    const selected = await shopify.resourcePicker({
-      type: "product",
-      multiple: false,
-      action: "select",
+  useEffect(() => {
+    const productIds = Object.keys(initialRelations);
+    const withRelated = productIds.filter(id => {
+      const relation = initialRelations[id];
+      return relation?.related && relation.related.length > 0;
     });
+    setExpandedProducts(new Set(withRelated));
+  }, [initialRelations]);
 
-    if (selected && selected.length > 0) {
-      const product = selected[0];
-      setSelectedMainProduct({
-        id: product.id,
-        title: product.title,
-        handle: product.handle,
-        images: product.images,
-      });
-    }
-  }, [shopify]);
+  const toggleProductExpanded = useCallback((productId) => {
+    setExpandedProducts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(productId)) {
+        newSet.delete(productId);
+      } else {
+        newSet.add(productId);
+      }
+      return newSet;
+    });
+  }, []);
+
 
   const handleSearchProductsAndAdd = useCallback(async () => {
     const selected = await shopify.resourcePicker({
@@ -196,7 +200,7 @@ export default function ProductSuggestionConfig() {
       setProductRelations(prev => ({
         ...prev,
         [mainProductId]: {
-          product: mainProduct || selectedMainProduct || {
+          product: mainProduct || {
             id: mainProductId,
             title: "",
             handle: "",
@@ -208,7 +212,7 @@ export default function ProductSuggestionConfig() {
 
       shopify.toast.show("Produtos relacionados atualizados!");
     }
-  }, [shopify, productRelations, selectedMainProduct]);
+  }, [shopify, productRelations]);
 
   const handleRemoveMainProduct = useCallback((productId) => {
     setProductRelations(prev => {
@@ -237,21 +241,6 @@ export default function ProductSuggestionConfig() {
     });
   }, []);
 
-  const handleAddRelation = useCallback(() => {
-    if (!selectedMainProduct) return;
-
-    if (!productRelations[selectedMainProduct.id]) {
-      setProductRelations(prev => ({
-        ...prev,
-        [selectedMainProduct.id]: {
-          product: selectedMainProduct,
-          related: []
-        }
-      }));
-    }
-
-    setSelectedMainProduct(null);
-  }, [selectedMainProduct, productRelations]);
 
   const handleSave = useCallback(() => {
     const formData = new FormData();
@@ -271,7 +260,7 @@ export default function ProductSuggestionConfig() {
   });
 
   return (
-    <s-page heading="Configurar Produtos Relacionados no Checkout">
+    <s-page heading="Produtos Relacionados no Checkout" fullWidth>
       <s-button
         slot="primary-action"
         onClick={handleSave}
@@ -283,75 +272,42 @@ export default function ProductSuggestionConfig() {
 
       <s-section>
         <s-stack gap="large-200">
-          <s-box padding="base" background="subdued" borderRadius="base">
+          <s-banner tone="info">
             <s-stack gap="tight">
-              <s-text emphasis="bold">Como funciona?</s-text>
-              <s-text>
-                1. Adicione um produto principal (que o cliente coloca no carrinho)
-              </s-text>
-              <s-text>
-                2. Configure quais produtos devem aparecer como sugestão quando esse produto estiver no carrinho
-              </s-text>
-              <s-text>
-                3. Repita para cada produto que você quer criar relações
-              </s-text>
-              <s-text>
-                4. Clique em Salvar Configuração para aplicar
+              <s-text emphasis="bold">Como funciona</s-text>
+              <s-text size="small">
+                Configure produtos relacionados que aparecerão como sugestões no checkout quando o cliente adicionar produtos principais ao carrinho.
               </s-text>
             </s-stack>
-          </s-box>
+          </s-banner>
 
           <s-stack gap="base">
-            <s-heading level={2}>Adicionar Nova Relação</s-heading>
-
-            <s-stack gap="tight">
-              {!selectedMainProduct ? (
-                <s-grid columns="auto auto" gap="tight">
-                  <s-button onClick={handleSearchProductsAndAdd} variant="primary">
-                    Buscar e adicionar produtos
-                  </s-button>
-                </s-grid>
-              ) : (
-                <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
-                  <s-grid gap="base" columns="auto 1fr auto" alignItems="center">
-                    {selectedMainProduct.images?.[0]?.originalSrc && (
-                      <img
-                        src={selectedMainProduct.images[0].originalSrc}
-                        alt={selectedMainProduct.title}
-                        style={{
-                          width: "48px",
-                          height: "48px",
-                          objectFit: "cover",
-                          borderRadius: "8px",
-                          border: "1px solid #e1e3e5"
-                        }}
-                      />
-                    )}
-                    <s-stack gap="none">
-                      <s-text emphasis="bold">{selectedMainProduct.title}</s-text>
-                      <s-text color="subdued" size="small">
-                        Produto selecionado
-                      </s-text>
-                    </s-stack>
-                    <s-stack direction="inline" gap="tight">
-                      <s-button onClick={handleAddRelation}>
-                        Confirmar
-                      </s-button>
-                      <s-button variant="secondary" onClick={() => setSelectedMainProduct(null)}>
-                        Cancelar
-                      </s-button>
-                    </s-stack>
-                  </s-grid>
+            <s-grid gap="base" columns="1fr auto" alignItems="center">
+              <s-heading level={2}>Adicionar Produtos</s-heading>
+              {mainProducts.length > 0 && (
+                <s-box padding="tight" background="info" borderRadius="base">
+                  <s-text size="small" emphasis="bold" color="base">
+                    {mainProducts.length} configurado{mainProducts.length !== 1 ? 's' : ''}
+                  </s-text>
                 </s-box>
               )}
-            </s-stack>
+            </s-grid>
+
+            <s-button onClick={handleSearchProductsAndAdd} variant="primary">
+              + Adicionar Produtos Principais
+            </s-button>
           </s-stack>
 
           {mainProducts.length > 0 && (
             <s-stack gap="base">
-              <s-heading level={2}>
-                Relações Configuradas ({mainProducts.length})
-              </s-heading>
+              <s-grid gap="base" columns="1fr auto" alignItems="center">
+                <s-heading level={2}>Relações Configuradas</s-heading>
+                <s-box padding="tight" background="success" borderRadius="base">
+                  <s-text size="small" emphasis="bold" color="base">
+                    {mainProducts.length}
+                  </s-text>
+                </s-box>
+              </s-grid>
 
               <s-text-field
                 label="Buscar produto"
@@ -366,11 +322,11 @@ export default function ProductSuggestionConfig() {
                 <s-box padding="large" background="subdued" borderRadius="base">
                   <s-stack gap="tight" alignment="center">
                     <s-text emphasis="bold">Nenhum produto encontrado</s-text>
-                    <s-text>Tente outro termo de busca</s-text>
+                    <s-text color="subdued">Tente outro termo de busca</s-text>
                   </s-stack>
                 </s-box>
               ) : (
-                <s-stack gap="base">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   {filteredProducts.map((productId) => {
                     const relation = productRelations[productId];
                     const mainProduct = relation.product;
@@ -382,30 +338,42 @@ export default function ProductSuggestionConfig() {
                         padding="base"
                         borderWidth="base"
                         borderRadius="base"
+                        background="base"
                       >
                         <s-stack gap="base">
-                          <s-grid gap="base" columns="auto 1fr auto" alignItems="center">
+                          <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
                             {mainProduct.images?.[0]?.originalSrc && (
                               <img
                                 src={mainProduct.images[0].originalSrc}
                                 alt={mainProduct.title}
                                 style={{
-                                  width: "64px",
-                                  height: "64px",
+                                  width: "80px",
+                                  height: "80px",
                                   objectFit: "cover",
-                                  borderRadius: "8px"
+                                  borderRadius: "8px",
+                                  border: "1px solid #e1e3e5",
+                                  flexShrink: 0
                                 }}
                               />
                             )}
 
-                            <s-stack gap="none">
-                              <s-text emphasis="bold" size="large">
-                                {mainProduct.title}
-                              </s-text>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <s-text emphasis="bold" size="large">
+                                  {mainProduct.title}
+                                </s-text>
+                                {relatedProducts.length > 0 && (
+                                  <s-box padding="tight" background="success" borderRadius="base">
+                                    <s-text size="small" emphasis="bold" color="base">
+                                      {relatedProducts.length}
+                                    </s-text>
+                                  </s-box>
+                                )}
+                              </div>
                               <s-text color="subdued" size="small">
-                                Produto Principal • {relatedProducts.length} relacionado(s)
+                                Produto Principal
                               </s-text>
-                            </s-stack>
+                            </div>
 
                             <s-button
                               variant="secondary"
@@ -413,68 +381,119 @@ export default function ProductSuggestionConfig() {
                             >
                               Remover
                             </s-button>
-                          </s-grid>
+                          </div>
 
                           <s-divider />
 
                           <s-stack gap="tight">
-                            <s-text emphasis="bold">
-                              Produtos que serão sugeridos:
-                            </s-text>
-
-                            <s-button
-                              onClick={() => handleSelectRelatedProducts(productId)}
-                              variant="secondary"
-                            >
-                              {relatedProducts.length > 0 ? "Alterar Produtos Relacionados" : "+ Adicionar Produtos Relacionados"}
-                            </s-button>
-
-                            {relatedProducts.length > 0 && (
-                              <s-stack gap="tight">
-                                {relatedProducts.map((related) => (
-                                  <s-box
-                                    key={related.id}
-                                    padding="tight"
-                                    background="subdued"
-                                    borderRadius="base"
+                            <div style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <s-button
+                                  variant="plain"
+                                  onClick={() => toggleProductExpanded(productId)}
+                                  disabled={relatedProducts.length === 0}
+                                  style={{
+                                    minWidth: "32px",
+                                    padding: "4px 8px",
+                                    opacity: relatedProducts.length === 0 ? 0.5 : 1
+                                  }}
+                                >
+                                  <svg
+                                    width="20"
+                                    height="20"
+                                    viewBox="0 0 20 20"
+                                    fill="none"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    style={{
+                                      transform: expandedProducts.has(productId) ? 'rotate(180deg)' : 'rotate(0deg)',
+                                      transition: 'transform 0.2s ease'
+                                    }}
                                   >
-                                    <s-grid gap="tight" columns="auto 1fr auto" alignItems="center">
-                                      {related.images?.[0]?.originalSrc && (
-                                        <img
-                                          src={related.images[0].originalSrc}
-                                          alt={related.title}
-                                          style={{
-                                            width: "40px",
-                                            height: "40px",
-                                            objectFit: "cover",
-                                            borderRadius: "6px",
-                                            border: "1px solid #e1e3e5"
-                                          }}
-                                        />
-                                      )}
-                                      <s-stack gap="none">
-                                        <s-text size="medium">{related.title}</s-text>
-                                        <s-text color="subdued" size="small">
-                                          {related.handle}
-                                        </s-text>
-                                      </s-stack>
-                                      <s-button
-                                        variant="plain"
-                                        onClick={() => handleRemoveRelatedProduct(productId, related.id)}
-                                      >
-                                        ✕
-                                      </s-button>
-                                    </s-grid>
-                                  </s-box>
-                                ))}
-                              </s-stack>
+                                    <path
+                                      d="M5 7.5L10 12.5L15 7.5"
+                                      stroke="currentColor"
+                                      strokeWidth="2"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                  </svg>
+                                </s-button>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                  <s-text emphasis="bold">Produtos Relacionados</s-text>
+                                  {relatedProducts.length > 0 && (
+                                    <s-box padding="tight" background="subdued" borderRadius="base">
+                                      <s-text size="small" emphasis="bold">
+                                        {relatedProducts.length} produto{relatedProducts.length !== 1 ? 's' : ''}
+                                      </s-text>
+                                    </s-box>
+                                  )}
+                                </div>
+                              </div>
+
+                              <s-button
+                                onClick={() => handleSelectRelatedProducts(productId)}
+                                variant="secondary"
+                              >
+                                {relatedProducts.length > 0 ? "Alterar" : "+ Adicionar"}
+                              </s-button>
+                            </div>
+
+                            {relatedProducts.length > 0 && expandedProducts.has(productId) && (
+                              <s-box padding="base" background="subdued" borderRadius="base">
+                                <div style={{
+                                  display: 'flex',
+                                  flexWrap: 'wrap',
+                                  gap: '16px'
+                                }}>
+                                  {relatedProducts.map((related) => (
+                                    <s-box
+                                      key={related.id}
+                                      padding="base"
+                                      background="base"
+                                      borderRadius="base"
+                                      borderWidth="base"
+                                      style={{ flex: '1 1 280px', minWidth: '280px', maxWidth: '100%' }}
+                                    >
+                                      <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                                        {related.images?.[0]?.originalSrc && (
+                                          <img
+                                            src={related.images[0].originalSrc}
+                                            alt={related.title}
+                                            style={{
+                                              width: "64px",
+                                              height: "64px",
+                                              objectFit: "cover",
+                                              borderRadius: "8px",
+                                              border: "1px solid #e1e3e5",
+                                              flexShrink: 0
+                                            }}
+                                          />
+                                        )}
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: 0 }}>
+                                          <s-text size="medium" emphasis="bold">{related.title}</s-text>
+                                          <s-text color="subdued" size="small">
+                                            {related.handle}
+                                          </s-text>
+                                        </div>
+                                        <s-button
+                                          variant="plain"
+                                          onClick={() => handleRemoveRelatedProduct(productId, related.id)}
+                                          style={{ flexShrink: 0 }}
+                                        >
+                                          ✕
+                                        </s-button>
+                                      </div>
+                                    </s-box>
+                                  ))}
+                                </div>
+                              </s-box>
                             )}
                           </s-stack>
                         </s-stack>
                       </s-box>
                     );
                   })}
-                </s-stack>
+                </div>
               )}
             </s-stack>
           )}
@@ -485,43 +504,15 @@ export default function ProductSuggestionConfig() {
                 <s-text emphasis="bold" size="large">
                   Nenhuma relação configurada
                 </s-text>
-                <s-text alignment="center">
-                  Clique em &quot;Adicionar Produto Principal&quot; para começar
+                <s-text color="subdued" alignment="center">
+                  Clique em &quot;Adicionar Produtos Principais&quot; para começar a configurar suas relações de produtos
                 </s-text>
+                <s-button onClick={handleSearchProductsAndAdd} variant="primary">
+                  Começar Agora
+                </s-button>
               </s-stack>
             </s-box>
           )}
-        </s-stack>
-      </s-section>
-
-      <s-section slot="aside" heading="Informações">
-        <s-stack gap="base">
-          <s-box padding="base" background="subdued" borderRadius="base">
-            <s-stack gap="tight">
-              <s-text emphasis="bold">Como Funciona</s-text>
-              <s-text size="small">
-                Quando um cliente adiciona um produto principal ao carrinho, os produtos relacionados aparecem como sugestão no checkout.
-              </s-text>
-            </s-stack>
-          </s-box>
-
-          <s-box padding="base" background="subdued" borderRadius="base">
-            <s-stack gap="tight">
-              <s-text emphasis="bold">Exemplo</s-text>
-              <s-text size="small">
-                Cliente adiciona &quot;Notebook&quot; → Aparece sugestão de &quot;Mouse&quot;, &quot;Teclado&quot;, &quot;Webcam&quot;
-              </s-text>
-            </s-stack>
-          </s-box>
-
-          <s-box padding="base" background="subdued" borderRadius="base">
-            <s-stack gap="tight">
-              <s-text emphasis="bold">Interface</s-text>
-              <s-text size="small">
-                Sugestões aparecem colapsadas com botão (+/-). Cliente expande para ver e adicionar.
-              </s-text>
-            </s-stack>
-          </s-box>
         </s-stack>
       </s-section>
     </s-page>
