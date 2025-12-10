@@ -2,7 +2,6 @@ import "@shopify/ui-extensions/preact";
 import { render } from "preact";
 import { useEffect, useState, useCallback } from "preact/hooks";
 import {
-  reactExtension,
   Icon,
 } from '@shopify/ui-extensions-react/checkout';
 
@@ -23,7 +22,8 @@ function Extension() {
   const fetchProducts = useCallback(async () => {
     setLoading(true);
     try {
-      const cartProductIds = lines.value
+      const cartLines = lines.value;
+      const cartProductIds = cartLines
         .map((line) => line.merchandise.product?.id)
         .filter(Boolean);
 
@@ -33,96 +33,89 @@ function Extension() {
         return;
       }
 
-      const perProductRecs = [];
+      const cartLineProductVariantIds = cartLines.map((item) => item.merchandise.id);
+      const excludedIds = new Set(cartProductIds);
+      const globalSeenProductIds = new Set();
+      const newCartLineRecommendations = new Map();
 
-      await Promise.all(
-        cartProductIds.map(async (productId) => {
-          const raw = await query(
-            `query RelatedProducts($productId: ID!) {
-               productRecommendations(productId: $productId, intent: RELATED) {
-                 id
-                 title
-                 images(first: 1) { nodes { url } }
-                 variants(first: 3) { nodes { id availableForSale price { amount currencyCode } } }
-               }
-             }`,
-            { variables: { productId } }
-          );
+      const isProductValid = (product, seenIds) => {
+        if (!product || !product.id) return false;
+        if (excludedIds.has(product.id)) return false;
+        if (seenIds.has(product.id)) return false;
+        const firstVariant = getFirstAvailableVariant(product);
+        if (!firstVariant) return false;
+        if (cartLineProductVariantIds.includes(firstVariant.id)) return false;
+        return true;
+      };
 
-          const recs =
-            raw &&
-            raw.data &&
-            Array.isArray(raw.data.productRecommendations)
-              ? raw.data.productRecommendations
-              : [];
+      const findFirstValidRec = (recs, seenIds) => {
+        for (const rec of recs) {
+          if (isProductValid(rec, seenIds)) {
+            return rec;
+          }
+        }
+        return null;
+      };
 
-          const availableRecs = recs.filter((rec) => getFirstAvailableVariant(rec));
-          perProductRecs.push(availableRecs);
-        })
-      );
+      for (let i = 0; i < cartLines.length; i++) {
+        const line = cartLines[i];
+        const productId = line.merchandise.product?.id;
+        if (!productId) continue;
 
-      const chosenIds = new Set();
-      let relatedList = [];
+        let pickedRec = null;
 
-      perProductRecs.forEach((list) => {
-        const unique = list.find(
-          (rec) => rec && rec.id && getFirstAvailableVariant(rec) && !chosenIds.has(rec.id)
+        const raw = await query(
+          `query RelatedProducts($productId: ID!) {
+             productRecommendations(productId: $productId, intent: RELATED) {
+               id
+               title
+               images(first: 1) { nodes { url } }
+               variants(first: 3) { nodes { id availableForSale price { amount currencyCode } } }
+             }
+           }`,
+          { variables: { productId } }
         );
-        const pick = unique || list.find((rec) => rec && rec.id && getFirstAvailableVariant(rec));
-        if (pick) {
-          relatedList.push(pick);
-          chosenIds.add(pick.id);
-        }
-      });
 
-      if (relatedList.length < cartProductIds.length) {
-        const extraPool = perProductRecs.flat().filter((rec) => rec && rec.id && getFirstAvailableVariant(rec));
-        for (const rec of extraPool) {
-          if (relatedList.length >= cartProductIds.length) break;
-          if (chosenIds.has(rec.id)) continue;
-          relatedList.push(rec);
-          chosenIds.add(rec.id);
-        }
-      }
+        const rawData = raw?.data || {};
+        const recs = Array.isArray(rawData['productRecommendations'])
+          ? rawData['productRecommendations']
+          : [];
 
-      if (relatedList.length < cartProductIds.length) {
-        const rawMeta = await query(
-          `query ($ids: [ID!]!) {
-             nodes(ids: $ids) {
-               ... on Product {
-                 id
-                 title
-                 metafield(namespace: "custom", key: "related_products") {
-                   type
-                   value
-                   references(first: 5) {
-                     nodes {
-                       ... on Product {
-                         id
-                         title
-                        images(first:1) { nodes { url } }
-                        variants(first:3) { nodes { id availableForSale price { amount currencyCode } } }
+        const validRec = findFirstValidRec(recs, globalSeenProductIds);
+        if (validRec) {
+          pickedRec = validRec;
+          globalSeenProductIds.add(validRec.id);
+        }
+
+        if (!pickedRec) {
+          const rawMeta = await query(
+            `query ($id: ID!) {
+               node(id: $id) {
+                 ... on Product {
+                   id
+                   title
+                   metafield(namespace: "custom", key: "related_products") {
+                     type
+                     value
+                     references(first: 5) {
+                       nodes {
+                         ... on Product {
+                           id
+                           title
+                           images(first:1) { nodes { url } }
+                           variants(first:3) { nodes { id availableForSale price { amount currencyCode } } }
+                         }
                        }
                      }
                    }
                  }
                }
-             }
-           }`,
-          { variables: { ids: cartProductIds } }
-        );
+             }`,
+            { variables: { id: productId } }
+          );
 
-        const metaNodes =
-          rawMeta &&
-          rawMeta.data &&
-          Array.isArray(rawMeta.data.nodes)
-            ? rawMeta.data.nodes
-            : [];
-
-        const metaMap = new Map();
-
-        // Coleta de references
-        metaNodes.forEach((node) => {
+          // @ts-ignore
+          const node = rawMeta?.data?.node;
           const meta = node?.metafield || null;
           const refs =
             meta &&
@@ -131,100 +124,63 @@ function Extension() {
               ? meta.references.nodes
               : [];
 
-          refs.forEach((ref) => {
-            if (ref && ref.id && !metaMap.has(ref.id)) {
-              metaMap.set(ref.id, ref);
+          if (refs.length > 0) {
+            const validRef = findFirstValidRec(refs, globalSeenProductIds);
+            if (validRef) {
+              pickedRec = validRef;
+              globalSeenProductIds.add(validRef.id);
             }
-          });
-        });
-
-        let metaRelatedList = Array.from(metaMap.values());
-
-        // Se só IDs, busca detalhes pelo value (JSON) ou pelas refs vazias
-        const onlyIds =
-          relatedList.length > 0 &&
-          relatedList.every(
-            (r) => r && typeof r === "object" && Object.keys(r).length === 1 && "id" in r
-          );
-
-        if (!metaRelatedList.length) {
-          // refs vazias: tenta ler value JSON para pegar GIDs
-          const idsFromValue = new Set();
-          metaNodes.forEach((node) => {
-            const meta = node?.metafield || null;
-            if (meta && meta.value) {
-              try {
-                const parsed = JSON.parse(meta.value);
-                if (Array.isArray(parsed)) {
-                  parsed.forEach((g) => typeof g === "string" && idsFromValue.add(g));
+          } else if (meta && meta.value) {
+            try {
+              const parsed = JSON.parse(meta.value);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                for (const gid of parsed) {
+                  if (typeof gid === "string" && !excludedIds.has(gid) && !globalSeenProductIds.has(gid)) {
+                    const rawDetails = await query(
+                      `query ($id: ID!) {
+                         node(id: $id) {
+                           ... on Product {
+                             id
+                             title
+                             images(first:1) { nodes { url } }
+                             variants(first:3) { nodes { id availableForSale price { amount currencyCode } } }
+                           }
+                         }
+                       }`,
+                      { variables: { id: gid } }
+                    );
+                    // @ts-ignore
+                    const detailNode = rawDetails?.data?.node;
+                    if (detailNode && isProductValid(detailNode, globalSeenProductIds)) {
+                      pickedRec = detailNode;
+                      globalSeenProductIds.add(detailNode.id);
+                      break;
+                    }
+                  }
                 }
-              } catch (err) {
-                console.warn("metafield value não é JSON ou não é lista de GIDs:", meta.value);
               }
+            } catch (err) {
+              console.warn("metafield value não é JSON válido:", meta.value);
             }
-          });
-
-          const idsArr = Array.from(idsFromValue);
-          if (idsArr.length > 0) {
-            const rawDetails = await query(
-              `query ($ids: [ID!]!) {
-                 nodes(ids: $ids) {
-                   ... on Product {
-                     id
-                     title
-                   images(first:1) { nodes { url } }
-                   variants(first:3) { nodes { id availableForSale price { amount currencyCode } } }
-                   }
-                 }
-               }`,
-              { variables: { ids: idsArr } }
-            );
-            metaRelatedList =
-              rawDetails &&
-              rawDetails.data &&
-              Array.isArray(rawDetails.data.nodes)
-                ? rawDetails.data.nodes.filter(Boolean)
-                : [];
           }
-        } else if (onlyIds) {
-          const ids = relatedList.map((r) => r.id);
-          const rawDetails = await query(
-            `query ($ids: [ID!]!) {
-               nodes(ids: $ids) {
-                 ... on Product {
-                   id
-                   title
-                   images(first:1) { nodes { url } }
-                   variants(first:3) { nodes { id availableForSale price { amount currencyCode } } }
-                 }
-               }
-             }`,
-            { variables: { ids } }
-          );
-          metaRelatedList =
-            rawDetails &&
-            rawDetails.data &&
-            Array.isArray(rawDetails.data.nodes)
-              ? rawDetails.data.nodes.filter(Boolean)
-              : [];
         }
 
-        for (const rec of metaRelatedList) {
-          if (relatedList.length >= cartProductIds.length) break;
-          if (!rec || !rec.id || chosenIds.has(rec.id)) continue;
-          if (!getFirstAvailableVariant(rec)) continue;
-          relatedList.push(rec);
-          chosenIds.add(rec.id);
+        if (pickedRec) {
+          newCartLineRecommendations.set(line.id, pickedRec);
         }
       }
 
-      if (!relatedList.length) {
-        relatedList = perProductRecs
-          .flat()
-          .filter((rec) => rec && rec.id && getFirstAvailableVariant(rec) && !chosenIds.has(rec.id));
+      const uniqueRecommendations = Array.from(newCartLineRecommendations.values());
+      const uniqueProducts = [];
+      const seenIds = new Set();
+      for (const rec of uniqueRecommendations) {
+        if (rec && rec.id && !seenIds.has(rec.id)) {
+          seenIds.add(rec.id);
+          uniqueProducts.push(rec);
+        }
       }
 
-      setProducts(relatedList || []);
+      setProducts(uniqueProducts);
     } catch (error) {
       console.error("Error fetching products:", error);
       setProducts([]);
@@ -352,7 +308,8 @@ function ProductOffer({ products, i18n, adding, handleAddToCart, showError, expa
         <s-button
           onClick={() => setExpanded(!expanded)}
         >
-          <Icon source={expanded ? 'chevron-up' : 'chevron-down'} />
+          {/* @ts-ignore */}
+          <Icon source={expanded ? 'chevronUp' : 'chevronDown'} />
         </s-button>
       </s-grid>
 
